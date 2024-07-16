@@ -1,0 +1,60 @@
+name: Go
+
+on:
+  workflow_dispatch:
+    inputs:
+      REPO:
+        description: Repository name
+        required: true
+      REF:
+        description: Repository reference
+        required: true
+      TAG:
+        description: Git tag
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+
+    env:
+      P: ${{ inputs.TAG }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.REPO }}
+        ref: ${{ inputs.REF }}
+
+    - name: Setup golang
+      uses: actions/setup-go@v5
+      with:
+        go-version: 'stable'
+
+    - name: Download dependencies
+      run:
+        GOMODCACHE="${PWD}"/go-mod go mod download -x -modcacherw
+
+    - name: Compress dependencies
+      run:
+        XZ_OPTS="-T0 -9" tar -acf ${P}-deps.tar.xz go-mod
+
+    - name: Create release note
+      run: |
+        DEPS=${P}-deps.tar.xz
+        cat <<EOF > note.md
+        \`\`\`
+        DIST ${DEPS} $(stat -c%s ${DEPS}) BLAKE2B $(b2sum ${DEPS}|cut -c-128) SHA512 $(sha512sum ${DEPS}|cut -c-128)
+        \`\`\`
+        EOF
+
+    - name: Create release and artifacts
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_REPO: ${{ github.repository }}
+      run:
+        gh release create ${P} -F note.md ${P}-deps.tar.xz
