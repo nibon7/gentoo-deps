@@ -1,0 +1,74 @@
+name: Cargo
+
+on:
+  workflow_dispatch:
+    inputs:
+      REPO:
+        description: Repository name
+        required: true
+      REF:
+        description: Repository reference
+        required: true
+      TAG:
+        description: Git tag
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+
+    env:
+      P: ${{ inputs.TAG }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.REPO }}
+        ref: ${{ inputs.REF }}
+
+    - name: Setup rust
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+
+    - name: Download dependencies
+      run: |
+        cargo vendor --locked cargo_home/gentoo > vendor.toml
+        sed -i 's/vendored-sources/gentoo/' vendor.toml
+        sed -i '/^\[source.gentoo\]/{N;d;}' vendor.toml
+        sed -i '/^\[source.crates-io\]/{N;d;}' vendor.toml
+
+    - name: Compress dependencies
+      run:
+        XZ_OPTS="-T0 -9" tar -acf ${P}-deps.tar.xz cargo_home
+
+    - name: Create release note
+      run: |
+        DEPS=${P}-deps.tar.xz
+        cat <<EOF > note.md
+        # Manifest
+        \`\`\`
+        DIST ${DEPS} $(stat -c%s ${DEPS}) BLAKE2B $(b2sum ${DEPS} | cut -c-128) SHA512 $(sha512sum ${DEPS} | cut -c-128)
+        \`\`\`
+        EOF
+        echo "BYTES=$(cat vendor.toml | tr -d '[:space:]' | wc -c)" >> "${GITHUB_ENV}"
+
+    - name: Show vendor.toml
+      if: ${{ env.BYTES > 0 }}
+      run: |
+        cat <<EOF >> note.md
+
+        # vendor.toml
+        \`\`\`toml
+        $(cat vendor.toml)
+        \`\`\`
+        EOF
+
+    - name: Create release and artifacts
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_REPO: ${{ github.repository }}
+      run:
+        gh release create ${P} -F note.md ${P}-deps.tar.xz
